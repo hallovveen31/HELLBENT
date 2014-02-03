@@ -320,7 +320,6 @@ void kernel_restart_prepare(char *cmd)
 	system_state = SYSTEM_RESTART;
 	usermodehelper_disable();
 	device_shutdown();
-	syscore_shutdown();
 }
 
 /**
@@ -334,6 +333,8 @@ void kernel_restart_prepare(char *cmd)
 void kernel_restart(char *cmd)
 {
 	kernel_restart_prepare(cmd);
+	disable_nonboot_cpus();
+	syscore_shutdown();
 	if (!cmd)
 		printk(KERN_EMERG "Restarting system.\n");
 	else
@@ -359,6 +360,7 @@ static void kernel_shutdown_prepare(enum system_states state)
 void kernel_halt(void)
 {
 	kernel_shutdown_prepare(SYSTEM_HALT);
+	disable_nonboot_cpus();
 	syscore_shutdown();
 	printk(KERN_EMERG "System halted.\n");
 	kmsg_dump(KMSG_DUMP_HALT);
@@ -603,6 +605,7 @@ static int set_user(struct cred *new)
 
 	free_uid(new->user);
 	new->user = new_user;
+	sched_autogroup_create_attach(current);
 	return 0;
 }
 
@@ -1112,7 +1115,7 @@ out:
 	write_unlock_irq(&tasklist_lock);
 	if (err > 0) {
 		proc_sid_connector(group_leader);
-		sched_autogroup_create_attach(group_leader);
+		
 	}
 	return err;
 }
@@ -1137,8 +1140,8 @@ static int override_release(char __user *release, size_t len)
 	int ret = 0;
 
 	if (current->personality & UNAME26) {
-		const char *rest = UTS_RELEASE;
-		char buf[65] = { 0 };
+        const char *rest = UTS_RELEASE;
+        char buf[65] = { 0 };
 		int ndots = 0;
 		unsigned v;
 		size_t copy;
