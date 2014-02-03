@@ -22,7 +22,8 @@ BOARD_OBJ_NAME:=board-msm8x60_p5lte.o
 GPIOMUX_OBJ_NAME:=gpiomux-8x60_p5lte.o
 endif
 
-obj-y += io.o dma.o memory.o
+obj-y += io.o dma.o memory.o 
+obj-$(CONFIG_MSM_MPDEC)			+= msm_mpdecision.o
 ifndef CONFIG_ARM_ARCH_TIMER
 obj-y += timer.o
 endif
@@ -254,6 +255,7 @@ obj-$(CONFIG_ARCH_MSM8960) += acpuclock-8960.o
 obj-$(CONFIG_ARCH_MSM8960) += memory_topology.o
 obj-$(CONFIG_ARCH_MSM8960) += saw-regulator.o
 obj-$(CONFIG_ARCH_MSM8960) += devices-8960.o
+obj-$(CONFIG_FORCE_FAST_CHARGE) += fastchg.o
 obj-$(CONFIG_ARCH_APQ8064) += devices-8960.o devices-8064.o
 board-8960-all-objs += board-8960.o board-8960-camera.o board-8960-display.o board-8960-pmic.o board-8960-storage.o board-8960-gpiomux.o
 board-8930-all-objs += board-8930.o board-8930-camera.o board-8930-display.o board-8930-pmic.o board-8930-storage.o board-8930-gpiomux.o
@@ -324,7 +326,13 @@ obj-y	+= gpio.o
 endif
 endif
 
-obj-$(CONFIG_MSM_SLEEP_STATS) += msm_rq_stats.o idle_stats.o
+ifdef CONFIG_MSM_SLEEP_STATS
+obj-y += msm_rq_stats.o idle_stats.o
+else
+ifdef CONFIG_MSM_MPDEC
+obj-y += msm_rq_stats.o
+endif
+endif
 obj-$(CONFIG_MSM_SLEEP_STATS_DEVICE) += idle_stats_device.o
 obj-$(CONFIG_MSM_DCVS) += msm_dcvs_scm.o msm_dcvs.o msm_dcvs_idle.o
 obj-$(CONFIG_MSM_SHOW_RESUME_IRQ) += msm_show_resume_irq.o
