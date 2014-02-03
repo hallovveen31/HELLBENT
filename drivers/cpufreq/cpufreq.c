@@ -298,8 +298,23 @@ void cpufreq_notify_transition(struct cpufreq_freqs *freqs, unsigned int state)
 	}
 }
 EXPORT_SYMBOL_GPL(cpufreq_notify_transition);
+/**
+ * cpufreq_notify_utilization - notify CPU userspace about CPU utilization
+ * change
+ *
+ * This function is called everytime the CPU load is evaluated by the
+ * ondemand governor. It notifies userspace of cpu load changes via sysfs.
+ */
+void cpufreq_notify_utilization(struct cpufreq_policy *policy,
+		unsigned int util)
+{
+	if (policy)
+		policy->util = util;
 
+	if (policy->util >= MIN_CPU_UTIL_NOTIFY)
+		sysfs_notify(&policy->kobj, NULL, "cpu_utilization");
 
+}
 
 /*********************************************************************
  *                          SYSFS INTERFACE                          *
@@ -387,6 +402,7 @@ show_one(cpuinfo_transition_latency, cpuinfo.transition_latency);
 show_one(scaling_min_freq, min);
 show_one(scaling_max_freq, max);
 show_one(scaling_cur_freq, cur);
+show_one(cpu_utilization, util);
 
 static int __cpufreq_set_policy(struct cpufreq_policy *data,
 				struct cpufreq_policy *policy);
@@ -456,6 +472,11 @@ static ssize_t store_scaling_governor(struct cpufreq_policy *policy,
 	unsigned int ret = -EINVAL;
 	char	str_governor[16];
 	struct cpufreq_policy new_policy;
+	char *envp[3];
+	char buf1[64];
+	char buf2[64];
+	int alt_cpu;
+	struct cpufreq_policy* alt_policy;
 
 	ret = cpufreq_get_policy(&new_policy, policy->cpu);
 	if (ret)
@@ -476,11 +497,36 @@ static ssize_t store_scaling_governor(struct cpufreq_policy *policy,
 	policy->user_policy.policy = policy->policy;
 	policy->user_policy.governor = policy->governor;
 
-	if (ret)
-		return ret;
-	else
-		return count;
-}
+	alt_cpu = policy->cpu ? 0 : 1;
+	if(!cpu_online(alt_cpu))
+		cpu_up(alt_cpu);
+
+	if(!cpufreq_get_policy(&new_policy, alt_cpu)) {
+		alt_policy=cpufreq_cpu_get(alt_cpu);
+
+		if(alt_policy != NULL) {
+			cpufreq_parse_governor(str_governor, &new_policy.policy, &new_policy.governor);
+			__cpufreq_set_policy(alt_policy, &new_policy);
+			alt_policy->user_policy.policy = alt_policy->policy;
+			alt_policy->user_policy.governor = alt_policy->governor;
+			cpufreq_cpu_put(alt_policy);
+		}
+	}
+
+	sysfs_notify(&policy->kobj, NULL, "scaling_governor");
+
+		snprintf(buf1, sizeof(buf1), "GOV=%s", policy->governor->name);
+		snprintf(buf2, sizeof(buf2), "CPU=%u", policy->cpu);
+		envp[0] = buf1;
+		envp[1] = buf2;
+		envp[2] = NULL;
+		kobject_uevent_env(cpufreq_global_kobject, KOBJ_ADD, envp);
+
+		if (ret)
+			return ret;
+		else
+			return count;
+	}
 
 /**
  * show_scaling_driver - show the cpufreq driver currently loaded
@@ -591,6 +637,59 @@ static ssize_t show_bios_limit(struct cpufreq_policy *policy, char *buf)
 	return sprintf(buf, "%u\n", policy->cpuinfo.max_freq);
 }
 
+#ifdef CONFIG_VDD_USERSPACE
+extern ssize_t acpuclk_get_vdd_levels_str(char *buf);
+static ssize_t show_vdd_levels(struct cpufreq_policy *policy, char *buf)
+{
+  return acpuclk_get_vdd_levels_str(buf);
+}
+
+extern void acpuclk_set_vdd(unsigned acpu_khz, int vdd);
+static ssize_t store_vdd_levels(struct cpufreq_policy *policy, const char *buf, size_t count)
+{
+  int i = 0, j;
+  int pair[2] = { 0, 0 };
+  int sign = 0;
+  if (count < 1)
+    return 0;
+  if (buf[0] == '-') {
+    sign = -1;
+    i++;
+  }
+  else if (buf[0] == '+') {
+    sign = 1;
+    i++;
+  }
+  for (j = 0; i < count; i++) {
+    char c = buf[i];
+    if ((c >= '0') && (c <= '9')) {
+      pair[j] *= 10;
+      pair[j] += (c - '0');
+    }
+    else if ((c == ' ') || (c == '\t')) {
+      if (pair[j] != 0) {
+        j++;
+        if ((sign != 0) || (j > 1))
+          break;
+      }
+    }
+    else
+      break;
+  }
+  if (sign != 0) {
+    if (pair[0] > 0)
+      acpuclk_set_vdd(0, sign * pair[0]);
+  }
+  else {
+    if ((pair[0] > 0) && (pair[1] > 0))
+      acpuclk_set_vdd((unsigned)pair[0], pair[1]);
+    else
+      return -EINVAL;
+  }
+  return count;
+}
+#endif
+
 cpufreq_freq_attr_ro_perm(cpuinfo_cur_freq, 0400);
 cpufreq_freq_attr_ro(cpuinfo_min_freq);
 cpufreq_freq_attr_ro(cpuinfo_max_freq);
@@ -601,10 +700,15 @@ cpufreq_freq_attr_ro(scaling_cur_freq);
 cpufreq_freq_attr_ro(bios_limit);
 cpufreq_freq_attr_ro(related_cpus);
 cpufreq_freq_attr_ro(affected_cpus);
+cpufreq_freq_attr_ro(cpu_utilization);
 cpufreq_freq_attr_rw(scaling_min_freq);
 cpufreq_freq_attr_rw(scaling_max_freq);
 cpufreq_freq_attr_rw(scaling_governor);
 cpufreq_freq_attr_rw(scaling_setspeed);
+
+#ifdef CONFIG_VDD_USERSPACE
+cpufreq_freq_attr_rw(vdd_levels);
+#endif
 
 static struct attribute *default_attrs[] = {
 	&cpuinfo_min_freq.attr,
@@ -613,11 +717,15 @@ static struct attribute *default_attrs[] = {
 	&scaling_min_freq.attr,
 	&scaling_max_freq.attr,
 	&affected_cpus.attr,
+	&cpu_utilization.attr,
 	&related_cpus.attr,
 	&scaling_governor.attr,
 	&scaling_driver.attr,
 	&scaling_available_governors.attr,
 	&scaling_setspeed.attr,
+#ifdef CONFIG_VDD_USERSPACE
+  	&vdd_levels.attr,
+#endif
 	NULL
 };
 
@@ -708,6 +816,7 @@ static int cpufreq_add_dev_policy(unsigned int cpu,
 #ifdef CONFIG_SMP
 	unsigned long flags;
 	unsigned int j;
+/*
 #ifdef CONFIG_HOTPLUG_CPU
 	struct cpufreq_governor *gov;
 
@@ -728,7 +837,7 @@ static int cpufreq_add_dev_policy(unsigned int cpu,
 	pr_debug("Restoring CPU%d min %d and max %d\n",
 		cpu, policy->min, policy->max);
 #endif
-
+*/
 	for_each_cpu(j, policy->cpus) {
 		struct cpufreq_policy *managed_policy;
 
@@ -956,10 +1065,15 @@ static int cpufreq_add_dev(struct sys_device *sys_dev)
 #ifdef CONFIG_HOTPLUG_CPU
 	for_each_online_cpu(sibling) {
 		struct cpufreq_policy *cp = per_cpu(cpufreq_cpu_data, sibling);
-		if (cp && cp->governor &&
-		    (cpumask_test_cpu(cpu, cp->related_cpus))) {
+		if (cp && cp->governor) {
 			policy->governor = cp->governor;
+			policy->min = cp->min;
+			policy->max = cp->max;
+			policy->user_policy.min = cp->user_policy.min;
+			policy->user_policy.max = cp->user_policy.max;
+
 			found = 1;
+			//pr_info("sibling: found sibling!\n");
 			break;
 		}
 	}
